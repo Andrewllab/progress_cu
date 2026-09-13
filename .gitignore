@@ -1,2 +1,9 @@
 .DS_Store
 safe_commit.sh
+.venv/
+.python/
+.cache/
+__pycache__/
+*.egg-info/
+runs/
+third_party/

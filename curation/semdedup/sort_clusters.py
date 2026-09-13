@@ -24,8 +24,8 @@ import pprint
 from tqdm import tqdm
 import argparse
 from typing import List, Tuple, Union
-from curation.semadedup.utils import get_logger
-from curation.semadedup.loader import EmbeddingLoader
+from curation.semdedup.utils import get_logger
+from curation.semdedup.loader import EmbeddingLoader
 import pickle
 import natsort
 

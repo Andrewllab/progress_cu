@@ -7,6 +7,11 @@
 SCIZOR is a self-supervised data curation framework that removes suboptimal and redundant data from large-scale datasets and enhances imitation learning policy performance.
 
 [\[Paper\]](https://arxiv.org/pdf/2505.22626) [\[Project Page\]](https://ut-austin-rpl.github.io/SCIZOR/)
+
+For the local robomimic / real-robot HDF5 workflow without Octo, see the
+[setup, code walkthrough, commands, and tuning notes](docs/ROBOMIMIC_GUIDE.md).
+Activate the prepared environment with `source scripts/activate_curation.sh`.
+
 ## Create curation env
 ```
 mamba create -n curation python==3.11.0

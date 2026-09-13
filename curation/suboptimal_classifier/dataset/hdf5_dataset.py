@@ -20,7 +20,13 @@ class Hdf5SubDataset(Dataset):
         self.num_bins = len(self.time_bins)
         self.cumulative_demo_lengths = []
         
-        for key in natsort.natsorted(self.hdf5['data'].keys()):
+        filter_key = config.hdf5_dataset_kwargs.get('filter_key')
+        self.demo_keys = natsort.natsorted(
+            [key.decode() if isinstance(key, bytes) else key
+             for key in self.hdf5[f'mask/{filter_key}'][:]]
+            if filter_key else self.hdf5['data'].keys()
+        )
+        for key in self.demo_keys:
             demo = self.hdf5[f'data/{key}']
             if 'num_samples' in demo.attrs:
                 length = demo.attrs['num_samples']
@@ -46,15 +52,16 @@ class Hdf5SubDataset(Dataset):
     
     def __getitem__(self, idx):
         demo_idx = bisect.bisect_right(self.cumulative_demo_lengths, idx)
+        demo_key = self.demo_keys[demo_idx]
         traj_len = self.cumulative_demo_lengths[demo_idx] if demo_idx == 0 else self.cumulative_demo_lengths[demo_idx] - self.cumulative_demo_lengths[demo_idx-1]
-        assert traj_len == len(self.hdf5[f'data/demo_{demo_idx}/actions'])
+        assert traj_len == len(self.hdf5[f'data/{demo_key}/actions'])
         cur_idx, end_idx, dist = self.get_rand_dist(traj_len)
         score = delta_time = (end_idx - cur_idx) / self.freq
             
         image = {}
         for key in self.obs_keys:
-            current_image = torch.tensor(self.hdf5[f'data/demo_{demo_idx}/obs/{key}'][cur_idx])
-            future_image = torch.tensor(self.hdf5[f'data/demo_{demo_idx}/obs/{key}'][end_idx])
+            current_image = torch.tensor(self.hdf5[f'data/{demo_key}/obs/{key}'][cur_idx])
+            future_image = torch.tensor(self.hdf5[f'data/{demo_key}/obs/{key}'][end_idx])
             image[key] = torch.stack([current_image, future_image], dim=0)
             image[key] = normalize_images(image[key], batched=False)
             image[key] = image[key].permute(0, 3, 1, 2)
@@ -94,13 +101,18 @@ class HDF5Dataset():
                 if file.endswith('.hdf5'):
                     self.paths.append(os.path.join(root, file))
                     
+        if not self.paths:
+            raise ValueError(f"No .hdf5 files found under {self.hdf5_config['data_dir']}")
+        self.paths.sort()
         self.sub_datasets = {}
         for path in self.paths:
             hdf5_file = h5py.File(path, 'r')
             self.sub_datasets[path] = Hdf5SubDataset(hdf5_file, config)
             
         self.dataset = InterleaveDatasets(list(self.sub_datasets.values()))
-        self.dataloader = DataLoader(self.dataset, batch_size=self.hdf5_config['batch_size'], shuffle=True, num_workers=self.hdf5_config['num_workers'], persistent_workers=True, prefetch_factor=2)
+        workers = self.hdf5_config['num_workers']
+        worker_kwargs = dict(persistent_workers=True, prefetch_factor=2) if workers else {}
+        self.dataloader = DataLoader(self.dataset, batch_size=self.hdf5_config['batch_size'], shuffle=True, num_workers=workers, **worker_kwargs)
         # self.dataloader = DataLoader(self.dataset, batch_size=self.hdf5_config['batch_size'], shuffle=True, num_workers=self.hdf5_config['num_workers'])
         self.data_iter = iter(self.dataloader)
         
@@ -122,8 +134,3 @@ class HDF5Dataset():
     
     def __getitem__(self, idx):
         return self.dataset[idx]
-    
-    
-        
-            
-        

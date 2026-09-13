@@ -7,12 +7,12 @@ import yaml
 import pprint
 import pathlib
 from typing import Union, Optional
-from curation.semadedup.utils import get_logger
+from curation.semdedup.utils import get_logger
 import faiss
 import torch
 import time
 import submitit
-from curation.semadedup.loader import EmbeddingLoader
+from curation.semdedup.loader import EmbeddingLoader
 
 
 def faiss_index_to_gpu(cpu_index):
@@ -74,7 +74,7 @@ def compute_centroids(
 
     d = data.shape[1]
     # -- Use GPUs for clustering when available
-    use_gpu = torch.cuda.is_available()
+    use_gpu = torch.cuda.is_available() and hasattr(faiss, 'StandardGpuResources')
     # use_gpu = False
 
     device = "cuda" if use_gpu else "cpu"

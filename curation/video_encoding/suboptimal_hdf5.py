@@ -3,18 +3,20 @@ import h5py
 import json
 from torch.utils.data import DataLoader, Dataset
 import tyro
-from transformers import AutoImageProcessor
 from curation.suboptimal_classifier.utils import normalize_images
 import os
 import torch
 import numpy as np
-from curation.utils.view_dataset_info import apply_filter
 from curation.suboptimal_classifier.discriminator.discriminator import Discriminator
 from tqdm import tqdm
 import imageio
 from pprint import pprint
 from torchvision.transforms import functional as F
 from concurrent.futures import ThreadPoolExecutor
+
+def apply_filter(frame, color):
+    # Works on a frame or a batch without importing the OXE/TensorFlow utilities.
+    return np.rint(0.7 * frame + 0.3 * np.asarray(color)).astype(frame.dtype)
 
 def load_model(model_path):
     if model_path.endswith(".pth"):
@@ -30,10 +32,10 @@ def load_model(model_path):
         config = json.load(f)
     model = Discriminator(**config['discriminator'])
     try:
-        model.load_state_dict(torch.load(model_path))
+        model.load_state_dict(torch.load(model_path, map_location='cpu', weights_only=True))
     except:
         print("Removing the prefix 'module.' from the keys")
-        state_dict = torch.load(model_path)
+        state_dict = torch.load(model_path, map_location='cpu', weights_only=True)
         new_state_dict = {}
         for key in state_dict.keys():
             new_state_dict[key.replace('module.', '')] = state_dict[key]
@@ -45,7 +47,7 @@ class Inference:
     def __init__(self, model_path):
         self.model, self.config = load_model(model_path)
         self.encoder_type = self.model.encoder_type
-        self.device = torch.device('cuda')
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if torch.cuda.device_count() > 1:
             num_gpu = torch.cuda.device_count()
             self.model = torch.nn.DataParallel(self.model, device_ids=range(num_gpu)).cuda()
@@ -64,7 +66,6 @@ class Inference:
 
 class PreprocessDataset(Dataset):
     def __init__(self, image, goal_dist, size):
-        self.processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
         self.image = image
         self.size = size
         self.image = self.chunk_image(image, goal_dist)
@@ -117,15 +118,15 @@ class Evaluator:
             cur_goal_time = all_goal_time[:, i:i+1]
             raw_goal_rank = np.argwhere((cur_goal_time >= rank_thres[:, 0]) & (cur_goal_time < rank_thres[:, 1]))[:, 1:]
             cur_goal_rank = (cur_goal_time - rank_thres[raw_goal_rank, 0])/(rank_thres[raw_goal_rank, 1] - rank_thres[raw_goal_rank, 0]) + raw_goal_rank - 0.5
-            cur_goal_rank = np.clip(cur_goal_rank, 0, rank_prob.shape[-1]-1).squeeze()
-            cur_pred_rank = pred_rank[:, i:i+1].squeeze()
+            cur_goal_rank = np.clip(cur_goal_rank, 0, rank_prob.shape[-1]-1).reshape(-1)
+            cur_pred_rank = pred_rank[:, i:i+1].reshape(-1)
             cur_scores = (cur_goal_rank - cur_pred_rank) / np.where(goal_dist[:, i]<1 , 1, goal_dist[:, i]) # normalize by goal distance
             cur_scores = np.clip(cur_scores, 0, 1)
 
-            processed_scores = np.convolve(np.squeeze(cur_scores), np.ones(int((self.goal_time[i])*freq)), 'full')
-            cnt = np.convolve(np.ones_like(np.squeeze(cur_scores)), np.ones(int((self.goal_time[i])*freq)), 'full')
+            processed_scores = np.convolve(cur_scores, np.ones(int((self.goal_time[i])*freq)), 'full')
+            cnt = np.convolve(np.ones_like(cur_scores), np.ones(int((self.goal_time[i])*freq)), 'full')
             
-            processed_scores = (processed_scores / cnt)[:-(int(self.goal_time[i]*freq)-1)]
+            processed_scores = (processed_scores / cnt)[:len(cur_scores)]
             for j in range(len(processed_scores)-1, 1, -1):
                 processed_scores[j-1] = gamma**(1/freq) * processed_scores[j] + processed_scores[j-1]
             
@@ -231,7 +232,8 @@ class Evaluator:
             pprint(subop_traj_cnt)
             print("total traj count")
             pprint(traj_cnt)
-            overlaps = self.count_overlap_with_preintv(file, scores, thres)
+            overlaps = (self.count_overlap_with_preintv(file, scores, thres)
+                        if 'intv_labels' in file['data'][next(iter(file['data']))] else 0)
                     
         elif 'mask' in file.keys() and 'better' in file['mask'].keys(): # used for robomimic dataset
             split_cnt = {"better": 0, "worse": 0, "okay": 0}
@@ -270,7 +272,8 @@ class Evaluator:
                 subop_traj_cnt += sum(is_subop)>min_subop_frames
                 
             print("subop_traj_cnt:", subop_traj_cnt)
-            overlaps = self.count_overlap_with_preintv(file, scores, thres)
+            overlaps = (self.count_overlap_with_preintv(file, scores, thres)
+                        if 'intv_labels' in file['data'][next(iter(file['data']))] else 0)
         
         if visualize_num > 0:
             traj_mask = [sum(score >= thres)>min_subop_frames for score in scores]
@@ -307,9 +310,13 @@ class Evaluator:
                 
         
     # only support latest image only discriminator
-    def get_score_from_hdf5(self, data_dir, batch_size, goal_time, image_type='agentview_image', mix_level=0, visualize_num=0, visualize_percentile=0.9, visualize_dir='./vis', visualize_worst=True, save_score=False):
+    def get_score_from_hdf5(self, data_dir, batch_size, goal_time, image_type='agentview_image', mix_level=0, visualize_num=0, visualize_percentile=0.9, visualize_dir='./vis', visualize_worst=True, save_score=False, discount_gamma=0.5):
         file_paths = []
         self.goal_time = goal_time
+        if not 0 <= discount_gamma <= 1:
+            raise ValueError('discount_gamma must be between 0 and 1')
+        if any(int(t * self.hdf5_config['freq']) < 1 for t in goal_time):
+            raise ValueError('Each goal_time must span at least one frame')
         for root, dirs, files in os.walk(data_dir):
             for file in files:
                 if file.endswith('.hdf5'):
@@ -340,7 +347,7 @@ class Evaluator:
                     rank_prob = self.inference.get_score(batch)
                     traj_rank_prob.append(rank_prob)
                 traj_rank_prob = np.concatenate(traj_rank_prob, axis=0)
-                scores = self.rank_prob_to_score(traj_rank_prob, preprocess_image.dist, freq)
+                scores = self.rank_prob_to_score(traj_rank_prob, preprocess_image.dist, freq, gamma=discount_gamma)
                 if save_score:
                     if 'subop_score' not in demo.keys():
                         file['data'][demo_key].create_dataset('subop_score', data=scores)
@@ -365,6 +372,7 @@ def main(
     visualize_worst:bool=True,
     image_type:str='agentview_image',
     save_score:bool=False,
+    discount_gamma:float=0.5,
 ):          
     goal_time = [float(time) for time in goal_time.split(',')]
     evaluator = Evaluator(model_path)
@@ -377,7 +385,8 @@ def main(
                                   visualize_percentile = visualize_percentile, 
                                   visualize_dir = visualize_dir, 
                                   visualize_worst = visualize_worst, 
-                                  save_score = save_score
+                                  save_score = save_score,
+                                  discount_gamma = discount_gamma,
                                   )
                     
 if __name__ == "__main__":

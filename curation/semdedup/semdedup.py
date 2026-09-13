@@ -18,7 +18,7 @@ import time
 import pprint
 import yaml
 import natsort
-from curation.semadedup.loader import EmbeddingLoader
+from curation.semdedup.loader import EmbeddingLoader
 import pickle
 import pathlib
 
@@ -64,7 +64,7 @@ class SemDeDupJob(submitit.helpers.Checkpointable):
     def semdedup(self, cluster, cluster_reps, device):
         st = time.time()
         ## -- compute pairwise cos sim between cluster items, then replace to diagonal with zeros to ignore self similarity
-        cluster_reps.to(device)
+        cluster_reps = cluster_reps.to(device)
         if self.args.sim_metric == "cosine":
             pair_w_sim_matrix = cluster_reps @ (cluster_reps.T)
         elif self.args.sim_metric == "l2":
@@ -280,7 +280,7 @@ def launch(args):
         tasks_per_node=TASKS_PER_NODE,
         cpus_per_task=CPUS_PER_TASKS,
         # gpus_per_node=NGPUS,
-        slurm_gres="gpu:2"
+        slurm_gres="gpu:2",
         timeout_min=TIMEOUT,
     )
 

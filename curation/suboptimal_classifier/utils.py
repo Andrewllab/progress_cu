@@ -1,7 +1,6 @@
 import torch 
 import numpy as np
 import wandb
-from flax.traverse_util import flatten_dict
 import datetime
 from collections import OrderedDict
 from concurrent.futures import Future
@@ -52,7 +51,16 @@ def wandb_init(config, name, debug):
     return wandb_id
 
 def wandb_log(info, step):
-    wandb.log(flatten_dict(info, sep="/"), step=step)
+    def flatten(mapping, prefix=""):
+        result = {}
+        for key, value in mapping.items():
+            name = f"{prefix}/{key}" if prefix else key
+            if isinstance(value, dict):
+                result.update(flatten(value, name))
+            else:
+                result[name] = value
+        return result
+    wandb.log(flatten(info), step=step)
     
 class TrainInfo:
     def __init__(self):

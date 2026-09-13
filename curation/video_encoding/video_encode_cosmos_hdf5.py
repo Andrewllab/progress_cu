@@ -1,18 +1,11 @@
 import torch
-from cosmos1.models.tokenizer.inference.video_lib import CausalVideoTokenizer
 import numpy as np
-import tensorflow_datasets as tfds
-import tensorflow as tf
-import dlimp as dl
-from curation.utils.oxe_dataset_configs import OXE_DATASET_CONFIGS, OXE_DATASET_CONTROL_FREQUENCY
-from curation.utils.oxe_standardization_transforms import OXE_STANDARDIZATION_TRANSFORMS
 from tqdm import tqdm
 import tyro
 import os
 import pickle
 import time
 from threading import Thread
-from utils import get_statistics
 import json
 import h5py
 from torchvision.transforms import functional as F
@@ -114,7 +107,10 @@ class ParallelCosmosEncoder(torch.nn.Module):
 class FeatureExtractor:
     def __init__(self, cosmos_path='Cosmos', model_name="Cosmos-0.1-Tokenizer-CV8x16x16", num_frames=8, chunk_length=20):
         cosmos_path = os.path.expanduser(cosmos_path)
-        self.encoder = CausalVideoTokenizer(checkpoint_enc=os.path.join(cosmos_path, 'checkpoints', model_name, 'encoder.jit'))._enc_model
+        checkpoint = os.path.join(cosmos_path, 'checkpoints', model_name, 'encoder.jit')
+        # The released wrapper loads this TorchScript encoder internally. Only
+        # encoder + quant_conv are used below, so no Cosmos generation stack is needed.
+        self.encoder = torch.jit.load(checkpoint, map_location='cpu').eval().to(torch.bfloat16)
         self.encoder = ParallelCosmosEncoder(self.encoder)
 
         self.num_frames = num_frames
