@@ -60,8 +60,19 @@ class Hdf5SubDataset(Dataset):
             
         image = {}
         for key in self.obs_keys:
-            current_image = torch.tensor(self.hdf5[f'data/{demo_key}/obs/{key}'][cur_idx])
-            future_image = torch.tensor(self.hdf5[f'data/{demo_key}/obs/{key}'][end_idx])
+            demo = self.hdf5[f'data/{demo_key}']
+            image_dataset = demo[f'obs/{key}']
+            image_index_path = f'obs/{key}_index'
+            if image_index_path in demo:
+                # The source-frame table stores one compact resized image per
+                # recording timestamp; this map aligns the 50 Hz grid to it.
+                frame_indices = demo[f'obs/{key}_index']
+                source_indices = (int(frame_indices[cur_idx]), int(frame_indices[end_idx]))
+                current_image = torch.from_numpy(np.asarray(image_dataset[source_indices[0]]))
+                future_image = torch.from_numpy(np.asarray(image_dataset[source_indices[1]]))
+            else:
+                current_image = torch.tensor(image_dataset[cur_idx])
+                future_image = torch.tensor(image_dataset[end_idx])
             image[key] = torch.stack([current_image, future_image], dim=0)
             image[key] = normalize_images(image[key], batched=False)
             image[key] = image[key].permute(0, 3, 1, 2)
@@ -96,10 +107,14 @@ class HDF5Dataset():
         self.hdf5_config = config.hdf5_dataset_kwargs
         self.image_key = config.discriminator_dataset_kwargs['image_key']
         self.paths = []
-        for root, dirs, files in os.walk(self.hdf5_config['data_dir']):
-            for file in files:
-                if file.endswith('.hdf5'):
-                    self.paths.append(os.path.join(root, file))
+        data_path = self.hdf5_config['data_dir']
+        if os.path.isfile(data_path) and data_path.endswith('.hdf5'):
+            self.paths.append(data_path)
+        else:
+            for root, dirs, files in os.walk(data_path):
+                for file in files:
+                    if file.endswith('.hdf5'):
+                        self.paths.append(os.path.join(root, file))
                     
         if not self.paths:
             raise ValueError(f"No .hdf5 files found under {self.hdf5_config['data_dir']}")
